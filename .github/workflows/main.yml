@@ -1,0 +1,56 @@
+name: Build and push new image to Amazon ECR
+
+on: workflow_dispatch
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+
+    env:
+      ECR_REPOSITORY: svc-images
+      IMAGE_TAG: ${{ format('{0}-{1}', github.event.repository.name, github.sha) }}
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GIT_TOKEN }}
+
+      - name: Configure AWS credentials
+        env:
+          AWS_REGION: eu-west-1
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build --build-arg SSH_PRIVATE_KEY="${{ secrets.SSH_PRIVATE_KEY }}" -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+      - name: Update image tag in kustomization file
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          git config --global user.email "dct-engineering@tslcglobal.com"
+          git config --global user.name "TSLC Global Engineering Bot"
+          git checkout -b update_new_tag_${{ env.IMAGE_TAG }}
+          cd kustomize/base
+          echo ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"  | bash
+          kustomize edit set image ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          rm kustomize
+          cd ../..
+          git add .
+          git commit -m "Update image tage in kustomization file to ${{ env.IMAGE_TAG }}"
+          git push origin update_new_tag_${{ env.IMAGE_TAG }}
+          gh pr create --title="Update image tag in kustomization file" --body=""
